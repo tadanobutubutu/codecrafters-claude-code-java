@@ -1,24 +1,33 @@
+import com.fasterxml.jackson.annotation.JsonClassDescription;
+import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import com.openai.client.OpenAIClient;
 import com.openai.client.okhttp.OpenAIOkHttpClient;
 import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
-import com.openai.models.chat.completions.ChatCompletionMessageParam;
-import com.openai.models.chat.completions.ChatCompletionUserMessageParam;
-import com.openai.models.chat.completions.ChatCompletionAssistantMessageParam;
+import com.openai.models.chat.completions.ChatCompletionMessage;
 import com.openai.models.chat.completions.ChatCompletionToolMessageParam;
-import com.openai.models.chat.completions.ChatCompletionTool;
-import com.openai.models.chat.completions.ChatCompletionFunctionTool;
-import com.openai.models.chat.completions.FunctionDefinition;
-import com.openai.models.chat.completions.FunctionParameters;
-import com.openai.core.JsonValue;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JsonNode;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 
 public class Main {
+    @JsonClassDescription("Read and return the contents of a file")
+    public static class Read {
+        @JsonPropertyDescription("The path to the file to read")
+        public String file_path;
+    }
+
+    @JsonClassDescription("Write content to a file")
+    public static class Write {
+        @JsonPropertyDescription("The path of the file to write to")
+        public String file_path;
+        @JsonPropertyDescription("The content to write to the file")
+        public String content;
+    }
+
+    @JsonClassDescription("Execute a shell command")
+    public static class Bash {
+        @JsonPropertyDescription("The command to execute")
+        public String command;
+    }
+
     public static void main(String[] args) {
         if (args.length < 2 || !"-p".equals(args[0])) {
             System.err.println("Usage: program -p <prompt>");
@@ -42,132 +51,55 @@ public class Main {
                 .baseUrl(baseUrl)
                 .build();
 
-        // Define tools
-        ChatCompletionTool readTool = ChatCompletionTool.ofFunction(
-            ChatCompletionFunctionTool.builder()
-                .function(FunctionDefinition.builder()
-                    .name("Read")
-                    .description("Read and return the contents of a file")
-                    .parameters(FunctionParameters.builder()
-                        .putAdditionalProperty("type", JsonValue.from("object"))
-                        .putAdditionalProperty("required", JsonValue.from(List.of("file_path")))
-                        .putAdditionalProperty("properties", JsonValue.from(Map.of(
-                            "file_path", Map.of(
-                                "type", "string",
-                                "description", "The path to the file to read"
-                            )
-                        )))
-                        .build())
-                    .build())
-                .build()
-        );
-
-        ChatCompletionTool writeTool = ChatCompletionTool.ofFunction(
-            ChatCompletionFunctionTool.builder()
-                .function(FunctionDefinition.builder()
-                    .name("Write")
-                    .description("Write content to a file")
-                    .parameters(FunctionParameters.builder()
-                        .putAdditionalProperty("type", JsonValue.from("object"))
-                        .putAdditionalProperty("required", JsonValue.from(List.of("file_path", "content")))
-                        .putAdditionalProperty("properties", JsonValue.from(Map.of(
-                            "file_path", Map.of(
-                                "type", "string",
-                                "description", "The path of the file to write to"
-                            ),
-                            "content", Map.of(
-                                "type", "string",
-                                "description", "The content to write to the file"
-                            )
-                        )))
-                        .build())
-                    .build())
-                .build()
-        );
-
-        ChatCompletionTool bashTool = ChatCompletionTool.ofFunction(
-            ChatCompletionFunctionTool.builder()
-                .function(FunctionDefinition.builder()
-                    .name("Bash")
-                    .description("Execute a shell command")
-                    .parameters(FunctionParameters.builder()
-                        .putAdditionalProperty("type", JsonValue.from("object"))
-                        .putAdditionalProperty("required", JsonValue.from(List.of("command")))
-                        .putAdditionalProperty("properties", JsonValue.from(Map.of(
-                            "command", Map.of(
-                                "type", "string",
-                                "description", "The command to execute"
-                            )
-                        )))
-                        .build())
-                    .build())
-                .build()
-        );
-
-        List<ChatCompletionMessageParam> messages = new ArrayList<>();
-        messages.add(ChatCompletionMessageParam.ofUser(
-            ChatCompletionUserMessageParam.builder()
-                .role(ChatCompletionUserMessageParam.Role.USER)
-                .content(ChatCompletionUserMessageParam.Content.ofTextContent(prompt))
-                .build()
-        ));
-
-        ObjectMapper mapper = new ObjectMapper();
+        ChatCompletionCreateParams.Builder createParamsBuilder = ChatCompletionCreateParams.builder()
+                .model("anthropic/claude-haiku-4.5")
+                .addTool(Read.class)
+                .addTool(Write.class)
+                .addTool(Bash.class)
+                .addUserMessage(prompt);
 
         while (true) {
-            ChatCompletionCreateParams params = ChatCompletionCreateParams.builder()
-                    .model("anthropic/claude-haiku-4.5")
-                    .messages(messages)
-                    .addTool(readTool)
-                    .addTool(writeTool)
-                    .addTool(bashTool)
-                    .build();
-
-            ChatCompletion response = client.chat().completions().create(params);
+            ChatCompletion response = client.chat().completions().create(createParamsBuilder.build());
 
             if (response.choices().isEmpty()) {
                 throw new RuntimeException("no choices in response");
             }
 
-            ChatCompletionAssistantMessageParam assistantMessage = response.choices().get(0).message();
-            messages.add(ChatCompletionMessageParam.ofAssistant(assistantMessage));
+            ChatCompletionMessage assistantMessage = response.choices().get(0).message();
+            createParamsBuilder.addMessage(assistantMessage);
 
             if (assistantMessage.toolCalls().isPresent() && !assistantMessage.toolCalls().get().isEmpty()) {
-                List<ChatCompletionAssistantMessageParam.ToolCall> toolCalls = assistantMessage.toolCalls().get();
-                for (ChatCompletionAssistantMessageParam.ToolCall toolCall : toolCalls) {
+                for (ChatCompletionMessage.ToolCall toolCall : assistantMessage.toolCalls().get()) {
                     String toolCallId = toolCall.asFunction().id();
                     String functionName = toolCall.asFunction().function().name();
-                    String arguments = toolCall.asFunction().function().arguments();
 
                     String result = "";
                     try {
-                        JsonNode node = mapper.readTree(arguments);
                         if ("Read".equals(functionName)) {
-                            String filePath = node.get("file_path").asText();
+                            Read readArgs = toolCall.asFunction().function().arguments(Read.class);
                             try {
-                                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(filePath));
+                                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(readArgs.file_path));
                                 result = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
                             } catch (Exception e) {
                                 result = "Error: " + e.getMessage();
                             }
                         } else if ("Write".equals(functionName)) {
-                            String filePath = node.get("file_path").asText();
-                            String content = node.get("content").asText();
+                            Write writeArgs = toolCall.asFunction().function().arguments(Write.class);
                             try {
-                                java.nio.file.Path path = java.nio.file.Paths.get(filePath);
+                                java.nio.file.Path path = java.nio.file.Paths.get(writeArgs.file_path);
                                 java.nio.file.Path parent = path.getParent();
                                 if (parent != null) {
                                     java.nio.file.Files.createDirectories(parent);
                                 }
-                                java.nio.file.Files.write(path, content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                                result = "Successfully wrote to " + filePath;
+                                java.nio.file.Files.write(path, writeArgs.content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                result = "Successfully wrote to " + writeArgs.file_path;
                             } catch (Exception e) {
                                 result = "Error: " + e.getMessage();
                             }
                         } else if ("Bash".equals(functionName)) {
-                            String command = node.get("command").asText();
+                            Bash bashArgs = toolCall.asFunction().function().arguments(Bash.class);
                             try {
-                                ProcessBuilder pb = new ProcessBuilder("bash", "-c", command);
+                                ProcessBuilder pb = new ProcessBuilder("bash", "-c", bashArgs.command);
                                 pb.redirectErrorStream(true);
                                 Process process = pb.start();
                                 if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
@@ -199,12 +131,10 @@ public class Main {
                         result = "Error parsing tool arguments: " + e.getMessage();
                     }
 
-                    messages.add(ChatCompletionMessageParam.ofTool(
-                        ChatCompletionToolMessageParam.builder()
+                    createParamsBuilder.addMessage(ChatCompletionToolMessageParam.builder()
                             .toolCallId(toolCallId)
                             .content(result)
-                            .build()
-                    ));
+                            .build());
                 }
                 continue;
             }
