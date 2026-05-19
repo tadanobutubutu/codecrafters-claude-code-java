@@ -1,33 +1,17 @@
-import com.fasterxml.jackson.annotation.JsonClassDescription;
-import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import static com.openai.core.ObjectMappers.jsonMapper;
+
 import com.openai.client.OpenAIClient;
 import com.openai.client.okhttp.OpenAIOkHttpClient;
-import com.openai.models.chat.completions.ChatCompletion;
-import com.openai.models.chat.completions.ChatCompletionCreateParams;
-import com.openai.models.chat.completions.ChatCompletionMessage;
-import com.openai.models.chat.completions.ChatCompletionToolMessageParam;
+import com.openai.core.JsonObject;
+import com.openai.core.JsonValue;
+import com.openai.models.FunctionDefinition;
+import com.openai.models.FunctionParameters;
+import com.openai.models.chat.completions.*;
+
+import java.util.List;
+import java.util.Map;
 
 public class Main {
-    @JsonClassDescription("Read and return the contents of a file")
-    public static class Read {
-        @JsonPropertyDescription("The path to the file to read")
-        public String file_path;
-    }
-
-    @JsonClassDescription("Write content to a file")
-    public static class Write {
-        @JsonPropertyDescription("The path of the file to write to")
-        public String file_path;
-        @JsonPropertyDescription("The content to write to the file")
-        public String content;
-    }
-
-    @JsonClassDescription("Execute a shell command")
-    public static class Bash {
-        @JsonPropertyDescription("The command to execute")
-        public String command;
-    }
-
     public static void main(String[] args) {
         if (args.length < 2 || !"-p".equals(args[0])) {
             System.err.println("Usage: program -p <prompt>");
@@ -51,11 +35,57 @@ public class Main {
                 .baseUrl(baseUrl)
                 .build();
 
+        ChatCompletionTool readTool = ChatCompletionTool.builder()
+                .function(FunctionDefinition.builder()
+                        .name("Read")
+                        .description("Read and return the contents of a file")
+                        .parameters(FunctionParameters.builder()
+                                .putAdditionalProperty("type", JsonValue.from("object"))
+                                .putAdditionalProperty("properties", JsonValue.from(Map.of(
+                                        "file_path", Map.of("type", "string", "description", "The path to the file to read")
+                                )))
+                                .putAdditionalProperty("required", JsonValue.from(List.of("file_path")))
+                                .putAdditionalProperty("additionalProperties", JsonValue.from(false))
+                                .build())
+                        .build())
+                .build();
+
+        ChatCompletionTool writeTool = ChatCompletionTool.builder()
+                .function(FunctionDefinition.builder()
+                        .name("Write")
+                        .description("Write content to a file")
+                        .parameters(FunctionParameters.builder()
+                                .putAdditionalProperty("type", JsonValue.from("object"))
+                                .putAdditionalProperty("properties", JsonValue.from(Map.of(
+                                        "file_path", Map.of("type", "string", "description", "The path of the file to write to"),
+                                        "content", Map.of("type", "string", "description", "The content to write to the file")
+                                )))
+                                .putAdditionalProperty("required", JsonValue.from(List.of("file_path", "content")))
+                                .putAdditionalProperty("additionalProperties", JsonValue.from(false))
+                                .build())
+                        .build())
+                .build();
+
+        ChatCompletionTool bashTool = ChatCompletionTool.builder()
+                .function(FunctionDefinition.builder()
+                        .name("Bash")
+                        .description("Execute a shell command")
+                        .parameters(FunctionParameters.builder()
+                                .putAdditionalProperty("type", JsonValue.from("object"))
+                                .putAdditionalProperty("properties", JsonValue.from(Map.of(
+                                        "command", Map.of("type", "string", "description", "The command to execute")
+                                )))
+                                .putAdditionalProperty("required", JsonValue.from(List.of("command")))
+                                .putAdditionalProperty("additionalProperties", JsonValue.from(false))
+                                .build())
+                        .build())
+                .build();
+
         ChatCompletionCreateParams.Builder createParamsBuilder = ChatCompletionCreateParams.builder()
                 .model("anthropic/claude-haiku-4.5")
-                .addTool(Read.class)
-                .addTool(Write.class)
-                .addTool(Bash.class)
+                .addTool(readTool)
+                .addTool(writeTool)
+                .addTool(bashTool)
                 .addUserMessage(prompt);
 
         while (true) {
@@ -69,37 +99,42 @@ public class Main {
             createParamsBuilder.addMessage(assistantMessage);
 
             if (assistantMessage.toolCalls().isPresent() && !assistantMessage.toolCalls().get().isEmpty()) {
-                for (ChatCompletionMessage.ToolCall toolCall : assistantMessage.toolCalls().get()) {
-                    String toolCallId = toolCall.asFunction().id();
-                    String functionName = toolCall.asFunction().function().name();
+                for (ChatCompletionMessageToolCall toolCall : assistantMessage.toolCalls().get()) {
+                    String toolCallId = toolCall.id();
+                    String functionName = toolCall.function().name();
+                    String argumentsStr = toolCall.function().arguments();
 
                     String result = "";
                     try {
+                        JsonValue arguments = JsonValue.from(jsonMapper().readTree(argumentsStr));
+                        JsonObject obj = (JsonObject) arguments;
+
                         if ("Read".equals(functionName)) {
-                            Read readArgs = toolCall.asFunction().function().arguments(Read.class);
+                            String filePath = obj.values().get("file_path").asStringOrThrow();
                             try {
-                                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(readArgs.file_path));
+                                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(filePath));
                                 result = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
                             } catch (Exception e) {
                                 result = "Error: " + e.getMessage();
                             }
                         } else if ("Write".equals(functionName)) {
-                            Write writeArgs = toolCall.asFunction().function().arguments(Write.class);
+                            String filePath = obj.values().get("file_path").asStringOrThrow();
+                            String content = obj.values().get("content").asStringOrThrow();
                             try {
-                                java.nio.file.Path path = java.nio.file.Paths.get(writeArgs.file_path);
+                                java.nio.file.Path path = java.nio.file.Paths.get(filePath);
                                 java.nio.file.Path parent = path.getParent();
                                 if (parent != null) {
                                     java.nio.file.Files.createDirectories(parent);
                                 }
-                                java.nio.file.Files.write(path, writeArgs.content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                                result = "Successfully wrote to " + writeArgs.file_path;
+                                java.nio.file.Files.write(path, content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                result = "Successfully wrote to " + filePath;
                             } catch (Exception e) {
                                 result = "Error: " + e.getMessage();
                             }
                         } else if ("Bash".equals(functionName)) {
-                            Bash bashArgs = toolCall.asFunction().function().arguments(Bash.class);
+                            String command = obj.values().get("command").asStringOrThrow();
                             try {
-                                ProcessBuilder pb = new ProcessBuilder("bash", "-c", bashArgs.command);
+                                ProcessBuilder pb = new ProcessBuilder("bash", "-c", command);
                                 pb.redirectErrorStream(true);
                                 Process process = pb.start();
                                 if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
