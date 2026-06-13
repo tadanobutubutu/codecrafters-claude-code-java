@@ -16,6 +16,13 @@ calling, agent loop, and how to integrate multiple tools into an AI assistant.
 
 # Passing the first stage
 
+
+<!-- AUTO-PACKAGE-BADGES:START -->
+<!-- Auto-generated package badges -->
+
+![Maven Central](https://img.shields.io/maven-central/v/io.codecrafters/codecrafters-claude-code?style=flat-square&logo=apachemaven&color=red) ![Maven Central downloads](https://img.shields.io/maven-central/d/io.codecrafters/codecrafters-claude-code?style=flat-square&color=brightgreen) [![Deployed](https://img.shields.io/badge/deployed-1.0-blue?style=flat-square)](https://search.maven.org/artifact/io.codecrafters/codecrafters-claude-code)
+
+<!-- AUTO-PACKAGE-BADGES:END -->
 The entry point for your `claude-code` implementation is in
 `src/main/java/Main.java`. Study and uncomment the relevant code, and submit to
 pass the first stage:
